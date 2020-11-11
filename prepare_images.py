@@ -1,6 +1,6 @@
 '''
 Preparation of CMU Panoptic derived training data for WHENet
-
+af 
 Two steps, one for mtc_dataset (CMU Dome 'Range of Motion' dataset) and on
 for the CMU Dome 'Haggling' dataset.
 
@@ -64,6 +64,7 @@ and stored in the panoptic dataset root.
 import cv2
 import os
 import json
+import time
 import numpy as np
 from utils import projectPoints, align, rotationMatrixToEulerAngles2, reference_head, get_sphere, select_euler, inverse_rotate_zyx
 from PIL import Image
@@ -88,7 +89,11 @@ def last_8chars(x):
 without_top = [0, 3, 5, 8, 9, 11, 12, 14, 15, 16, 18, 20, 21, 22, 23, 24, 25, 26, 27, 29]
 
 def save_img_head(frame, save_path, seq, cam, cam_id, json_file, frame_id, threshold, yaw_ref):
-    img_path = os.path.join(save_path, seq)
+    saved_frame_origin = False
+    with open(json_file) as dfile:
+        fframe = json.load(dfile)
+        count_face = -1
+        yaw_avg = 0
     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     frame = Image.fromarray(frame)
     # print(frame.size)
@@ -100,10 +105,8 @@ def save_img_head(frame, save_path, seq, cam, cam_id, json_file, frame_id, thres
     cam['distCoef'] = np.array(cam['distCoef'])
     cam['R'] = np.mat(cam['R'])
     cam['t'] = np.array(cam['t']).reshape((3, 1))
-    with open(json_file) as dfile:
-        fframe = json.load(dfile)
-        count_face = -1
-        yaw_avg = 0
+    
+    anno_infos = []
     for face in fframe['people']:
         # 3D Face has 70 3D joints, stored as an array [x1,y1,z1,x2,y2,z2,...]
         face3d = np.array(face['face70']['landmarks']).reshape((-1, 3)).transpose()
@@ -135,6 +138,7 @@ def save_img_head(frame, save_path, seq, cam, cam_id, json_file, frame_id, thres
             status, [pitch, yaw, roll] = select_euler(np.rad2deg(inverse_rotate_zyx(compound)))
             yaw= -yaw
             roll = -roll
+
             yaw_avg = yaw_avg+yaw
             if(abs(yaw-yaw_ref)>threshold or yaw_ref==-999):
                 if (status == True):
@@ -154,25 +158,80 @@ def save_img_head(frame, save_path, seq, cam, cam_id, json_file, frame_id, thres
                             # draw.text((0, 20), "roll: {}".format(round(roll)), (0, 255, 255))
                             # plt.imshow(img)
                             # plt.show()
+                            img_path = os.path.join(save_path, seq + "_cropped")
+                            
+                            if not (os.path.exists(img_path)):
+                                os.mkdir(img_path)
                             filename = '{0:02d}_{1:01d}_{2:08d}.jpg'.format(cam_id, count_face, frame_id)
                             if not (os.path.exists(img_path)):
                                 os.mkdir(img_path)
                             file_path = os.path.join(img_path, filename)
                             img.save(file_path, "JPEG")
-                            anno_path = os.path.join(save_path, "annotation.txt")
+                            # print("Saved head cropped imgs.")
+                            anno_path = os.path.join(save_path, f"{seq}_annotation_crop_imgs.txt")
                             line = seq+'/'+filename + ','+str(yaw)+','+str(pitch)+','+str(roll)+'\n'
                             with open(anno_path, "a") as f:
                                 f.write(line)
+                            # Info for annotation_full_imgs.txt
+                            anno_info = [x_min, y_min, x_max, y_max, yaw, pitch, roll]
+                            anno_infos.append(anno_info)
+
+                            if not saved_frame_origin:
+                                saved_frame_origin = True
+                                file_origin_imgs_path = os.path.join(save_path, seq + "_origin")
+                                if not (os.path.exists(file_origin_imgs_path)):
+                                    os.mkdir(file_origin_imgs_path)
+                                name = f"{cam_id}_{frame_id}.jpg"
+                                img_origin_path = os.path.join(file_origin_imgs_path, name)
+                                # print(f"Saving frame to {img_origin_path}")
+                                
+                                frame.save(img_origin_path)
+                                # print(f"Saved.")
+    if not saved_frame_origin:
+        # Info for anotation full imgs
+        anno_path = os.path.join(save_path, f"{seq}_annotation_full_imgs.txt")
+        with open(anno_path, "a") as f:
+          line = f'{cam_id}_{frame_id}.jpg\t'
+          for anno_info in anno_infos:
+            line += " ".join([str(x) for x in anno_info]) + '\t'
+          f.write(line+'\n')
+
     if count_face!=-1:
         return yaw_avg/(count_face+1)
     else:
         return -999
 
+def run_bash(bash_command):
+    os.system(bash_command)
+
 def sample_video(root_path, sequence_name, save_path, thresh=5, interval=10):
     video_path = os.path.join(root_path, sequence_name, 'hdVideos')
     json_path = os.path.join(root_path, sequence_name, 'hdFace3d')
+    if os.path.isdir(json_path):
+      print(f"Processing {sequence_name}.")
+    else:
+      print(f"Not found dir hdFace3d in {sequence_name}")
+      tarfile = json_path + ".tar"
+      if os.path.isfile(tarfile):
+        print(f"Found tar file, extracting.")
+        
+        # tar_command = "tar xvf \"" + tarfile + "\" -C \"" + os.path.join(root_path, sequence_name) + "\"" 
+        json_path = os.path.join("/content/sample_data", sequence_name)
+        if not (os.path.exists(json_path)):
+            os.mkdir(json_path)
+
+        tar_command = "tar xvf \"" + tarfile + "\" -C \"" + json_path + "\""
+        print(tar_command)
+        run_bash(tar_command)
+        json_path = os.path.join(json_path, "hdFace3d")
+      else:
+        print("==============================================")
+        print(f"Not found tar file {sequence_name}, continue.")
+        print("==============================================")
+        return
     # save_path = os.path.join(save_path, sequence_name)
     file_list = os.listdir(json_path)
+    # print(file_list)
     json_list = []
 
     with open(root_path+'/'+sequence_name+'/calibration_{0}.json'.format(sequence_name)) as cfile:
@@ -181,16 +240,22 @@ def sample_video(root_path, sequence_name, save_path, thresh=5, interval=10):
     cameras = {(cam['panel'], cam['node']): cam for cam in calib['cameras']}
     for filename in sorted(file_list, key=last_8chars):
         json_list.append(os.path.join(json_path, filename))
+        # print(json_list[0][-12:].split("."))
     start_frame = int(json_list[0][-12:].split(".")[0])
     end_frame = int(json_list[-1][-12:].split(".")[0])
-    for i in range(start_frame, end_frame, interval):
-        print(json_list[i-start_frame])
+    print(f"Num frame process: {len(json_list)}")
+    # for i in range(start_frame, end_frame, interval):
+        # print(json_list[i-start_frame])
     print(start_frame, end_frame)
-
+    
+    # for i in range(0, 31): #0 to 30 hd cameras
     for i in without_top: #0 to 30 hd cameras
+        start_time = time.time()
         clip = 'hd_00_{0:02d}.mp4'.format(i)
         video_clip = os.path.join(video_path, clip)
+        print(f"Read clip: {video_clip}")
         cap = cv2.VideoCapture(video_clip)
+        print("Total: ",int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
         ret, frame = cap.read()
         count = 0
         frame_id = start_frame
@@ -199,20 +264,43 @@ def sample_video(root_path, sequence_name, save_path, thresh=5, interval=10):
         while frame_id<end_frame:
             ret, frame = cap.read()
             count+=1
+
+            # file_origin_imgs_path = os.path.join(save_path, sequence_name + "_all_frame")
+            # if not (os.path.exists(file_origin_imgs_path)):
+            #     os.mkdir(file_origin_imgs_path)
+            # name = f"{i}_{count}.jpg"
+            # img_origin_path = os.path.join(file_origin_imgs_path, name)
+            # print(f"Saving frame to {img_origin_path}")
+            # print(frame.shape)
+            # frame_PIL = Image.fromarray(frame)
+            # frame_PIL.save(img_origin_path)
+            # print(f"Saved.")
+
+            # print(count)
             if(count==frame_id):
+                # print("Match frame id")
                 # print('i',i)
                 # print('json',frame_id-start_frame)
                 #print('{}: {}'.format(sequence_name,frame_id))
-                try:
-                    if not (frame==frame[0,0]).all():
-                        yaw_prev = save_img_head(frame, save_path, sequence_name, cameras[(0, i)],i, json_list[frame_id-start_frame], frame_id, thresh, yaw_prev)
-                    frame_id = frame_id + interval
-                except:
-                    break
+              
+                if ret:
+                    yaw_prev = save_img_head(frame, save_path, sequence_name, cameras[(0, i)],i, json_list[frame_id-start_frame], frame_id, thresh, yaw_prev)
+                frame_id = frame_id + interval
+                
+        end_time = time.time()
+        print(f"Time process: {end_time - start_time}")
 
 def mtc_dataset(root_path, sequence_name, save_path, thresh=5):
     img_path = os.path.join(root_path, 'hdImgs', sequence_name)
     json_path = os.path.join(root_path, 'config',sequence_name, 'hdFace3d')
+    # if os.path.isdir(json_path):
+    #   print(f"Processing {sequence_name}.")
+    # else:
+    #   print(f"Not found hdFace3d in {sequence_name}")
+    #   tarfile = json_path + ".tar"
+    #   if os.path.isfile(tarfile):
+    #     print(f"Found tar file: {tarfile}")
+    #     return
     img_dir_list = os.listdir(img_path)
     img_dir_list =sorted(img_dir_list, key=last_8chars)
 
@@ -235,6 +323,7 @@ def mtc_dataset(root_path, sequence_name, save_path, thresh=5):
             curr_dir = os.path.join(img_path, img_dir_list[i])
             # print(os.listdir(curr_dir))
             frame_id = int(img_dir_list[i])
+
             frame_file_name = "00_{0:02d}_{1:08d}.jpg".format(cam_n,frame_id)
             # print(frame_file_name)
             frame_file_path = os.path.join(curr_dir,frame_file_name)
@@ -245,7 +334,7 @@ def mtc_dataset(root_path, sequence_name, save_path, thresh=5):
 
 
 if __name__ == '__main__':
-    root = '/home/tmp/panoptic-toolbox'
+    root = '/content/drive/My Drive/Colab Notebooks/panoptic_dataset_toolbox'
     out_path = os.path.dirname(os.path.abspath(__file__))+'/data/pre_process'
     try:
         os.makedirs( out_path )
@@ -260,7 +349,7 @@ if __name__ == '__main__':
             mtc_dataset(root, seq_list[i], out_path)
     else:
         vid_seq_list =['170404_haggling_a1','170404_haggling_a2','170404_haggling_a3','170404_haggling_b1','170404_haggling_b2','170404_haggling_b3','170407_haggling_a1','170407_haggling_a2','170407_haggling_a3','170407_haggling_b1','170407_haggling_b2','170407_haggling_b3']
-        for i in range(0,8):
+        for i in range(2,4):
             try:
                 os.path.makedirs( out_path + '/' + vid_seq_list[i] )
             except:
